@@ -1,4 +1,4 @@
-##FOLDER STRUCTURE
+## BACKEND_FOLDER STRUCTURE
 backend/
 ├── node_modules/
 ├── routes/
