@@ -1,0 +1,49 @@
+maveli-game-server/
+├── src/
+│   ├── index.js
+│   ├── app.js              ← Express app setup
+│   ├── routes/
+│   │   ├── index.js
+│   │   ├── leaderboard.js
+│   │   ├── admin.js
+│   │   └── health.js       ← Health check endpoint
+│   ├── controllers/
+│   │   ├── leaderboardController.js
+│   │   ├── adminController.js
+│   │   └── healthController.js
+│   ├── models/
+│   │   ├── Score.js
+│   │   └── Admin.js
+│   ├── middleware/
+│   │   ├── auth.js
+│   │   ├── rateLimit.js
+│   │   ├── cors.js
+│   │   ├── validation.js
+│   │   └── errorHandler.js
+│   ├── config/
+│   │   ├── database.js
+│   │   ├── redis.js        ← For caching/sessions
+│   │   └── settings.js
+│   └── utils/
+│       ├── logger.js
+│       ├── security.js
+│       └── helpers.js
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+├── docs/
+│   └── api.md              ← API documentation
+├── scripts/
+│   ├── seed.js             ← Database seeding
+│   └── migrate.js          ← Database migrations
+├── package.json
+├── .env
+├── .env.production
+├── .env.staging
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
+├── railway.json           ← For Railway deployment
+├── render.yaml            ← For Render deployment
+└── README.md
