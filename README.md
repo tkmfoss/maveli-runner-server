@@ -1,4 +1,5 @@
-## BACKEND_FOLDER STRUCTURE
+# BACKEND_FOLDER STRUCTURE
+```
 backend/
 ├── node_modules/
 ├── routes/
@@ -8,3 +9,4 @@ backend/
 ├── package-lock.json
 ├── .env
 └── server.js
+```
