@@ -30,7 +30,7 @@ app.use(express.static("public"));
 
 // Routes
 app.get("/", async (req, res) => {
-  res.send("Hello from Civil Server");
+  res.send("Hello from  Server");
 });
 
 app.use("/api", router);
