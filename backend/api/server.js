@@ -1,6 +1,5 @@
 import express from "express";
 import "dotenv/config";
-import { createClient } from "@supabase/supabase-js";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -8,7 +7,7 @@ import router from "../routes/game.js";
 import authrouter from "../routes/auth.js";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+// const PORT = process.env.PORT || 3000;
 
 
 
@@ -38,4 +37,7 @@ app.use("/api/auth", authrouter);
 //   console.log(`📡 API Base URL: http://localhost:${PORT}/`);
 // });
 
-export default app;
+// export default app;
+export default function handler(req, res) {
+  app(req, res);
+}
