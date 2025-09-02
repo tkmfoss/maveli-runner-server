@@ -9,26 +9,35 @@ import authrouter from "./routes/auth.js";
 
 const app = express();
 
-// For Vercel serverless functions, we don't need to specify PORT
-// Vercel handles this automatically
-
+// Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY,
 );
 
-app.use(helmet());
+// Security middleware
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS configuration
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "*", // Allow all origins in development
+    origin: process.env.CLIENT_URL || "*",
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
+// Logging middleware
 app.use(morgan("combined"));
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true }));
 
+// Body parsing middleware
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// Root endpoint
 app.get("/", (req, res) => {
   res.json({ 
     message: "Maveli Runner API is running!",
@@ -37,6 +46,7 @@ app.get("/", (req, res) => {
   });
 });
 
+// API health check
 app.get("/api", (req, res) => {
   res.json({ 
     message: "API endpoint working",
@@ -44,19 +54,30 @@ app.get("/api", (req, res) => {
   });
 });
 
+// API routes
 app.use("/api", router);
 app.use("/api/auth", authrouter);
 
-// Error handling middleware
+// Global error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: "Something went wrong!" });
+  console.error("Global error handler:", err);
+  
+  // Don't leak error details in production
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  
+  res.status(err.status || 500).json({ 
+    error: isDevelopment ? err.message : "Internal server error",
+    ...(isDevelopment && { stack: err.stack })
+  });
 });
 
-// Handle 404
+// Handle 404 for all other routes
 app.use("*", (req, res) => {
-  res.status(404).json({ error: "Route not found" });
+  res.status(404).json({ 
+    error: "Route not found",
+    path: req.originalUrl 
+  });
 });
 
-// For Vercel serverless functions, export the app
+// Export for Vercel
 export default app;
