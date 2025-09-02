@@ -26,12 +26,31 @@ authrouter.post("/signup", async (req, res) => {
       console.error("Error signing up:", error.message);
       return res.status(400).json({ error: error.message });
     }
+
+    // Insert username and user_id into USER_PROFILES table after successful signup
+    const { data: profileData, error: profileError } = await supabase
+      .from("USER_PROFILES")
+      .insert([
+        {
+          user_id: data.user.id,
+          user_name: username,  
+          score: 0,            
+          last_updated: new Date().toISOString()
+        }
+      ]);
+
+    if (profileError) {
+      console.error("Error inserting user profile:", profileError.message);
+      return res.status(500).json({ error: "Failed to create user profile" });
+    }
+
     return res.json({ user: data.user });
   } catch (error) {
     console.error("Signup error:", error);
     return res.status(500).json({ error: "Failed to enter User Credentials" });
   }
 });
+
 
 
 authrouter.post("/login", async (req, res) => {
