@@ -38,6 +38,4 @@ app.use("/api/auth", authrouter);
 // });
 
 // export default app;
-export default function handler(req, res) {
-  app(req, res);
-}
+export default app;
