@@ -1,6 +1,7 @@
 import express from "express";
 import "dotenv/config";
 import cors from "cors";
+import { createClient } from "@supabase/supabase-js";
 import helmet from "helmet";
 import morgan from "morgan";
 import router from "./routes/game.js";
@@ -10,6 +11,11 @@ const app = express();
 
 // For Vercel serverless functions, we don't need to specify PORT
 // Vercel handles this automatically
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY,
+);
 
 app.use(helmet());
 app.use(
