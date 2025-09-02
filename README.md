@@ -8,5 +8,6 @@ backend/
 ├── package.json
 ├── package-lock.json
 ├── .env
+├── vercel.json
 └── server.js
 ```
