@@ -3,8 +3,8 @@ import "dotenv/config";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import router from "../routes/game.js";
-import authrouter from "../routes/auth.js";
+import router from "./routes/game.js";
+import authrouter from "./routes/auth.js";
 
 const app = express();
 // const PORT = process.env.PORT || 3000;
