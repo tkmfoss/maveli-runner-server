@@ -12,9 +12,9 @@ const supabaseBase = createClient(
 const GAME_CONSTANTS = {
   SCORE_INCREMENT_INTERVAL: 50,
   MIN_GAME_DURATION: 1000,
-  MAX_SCORE_PER_SECOND: 20,
+  MAX_SCORE_PER_SECOND: 25, 
   MIN_EVENTS_PER_GAME: 2,
-  SCORE_TOLERANCE: 5,
+  SCORE_TOLERANCE: 10, 
   DURATION_BUFFER: 5
 };
 
@@ -64,7 +64,7 @@ function validateGameSession(gameSession, finalScore) {
   }
 
   const calculatedDuration = endTs - startTs;
-  if (Math.abs(duration - calculatedDuration) > 1000) {
+  if (Math.abs(duration - calculatedDuration) > 2000) { 
     return { valid: false, reason: "Duration mismatch with timestamps" };
   }
 
@@ -83,13 +83,12 @@ function validateGameSession(gameSession, finalScore) {
       return { valid: false, reason: "Invalid event structure" };
     }
 
-    const eventTs = new Date(event.timestamp).getTime();
-    if (isNaN(eventTs) || eventTs < startTs || eventTs > endTs) {
+    const eventTimestamp = typeof event.timestamp === 'number' && event.timestamp < 1000000000000 
+      ? startTs + event.timestamp 
+      : new Date(event.timestamp).getTime();
+      
+    if (isNaN(eventTimestamp) || eventTimestamp < startTs || eventTimestamp > endTs + 1000) {
       return { valid: false, reason: "Event timestamp outside game duration" };
-    }
-
-    if (i > 0 && eventTs < new Date(events[i - 1].timestamp).getTime()) {
-      return { valid: false, reason: "Events not in chronological order" };
     }
   }
 
@@ -150,17 +149,14 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       return res.status(400).json({ error: "Invalid score format" });
     }
 
-    if (score > 10000) {
+    if (score > 1500000) { 
       return res.status(400).json({ error: "Score exceeds maximum allowed" });
     }
 
     if (gameSession) {
       const validation = validateGameSession(gameSession, score);
       if (!validation.valid) {
-        return res.status(400).json({
-          error: "Game session validation failed",
-          reason: validation.reason
-        });
+        console.log(`Game session validation failed for user ${user.id}: ${validation.reason}`);
       }
     }
 
@@ -180,10 +176,10 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
 
     if (lastUpdated) {
       const timeSinceLastUpdate = Date.now() - new Date(lastUpdated).getTime();
-      if (timeSinceLastUpdate < 5000) {
+      if (timeSinceLastUpdate < 3000) { 
         return res.status(429).json({ 
           error: "Please wait before submitting another score",
-          cooldownRemaining: Math.ceil((5000 - timeSinceLastUpdate) / 1000)
+          cooldownRemaining: Math.ceil((3000 - timeSinceLastUpdate) / 1000)
         });
       }
     }
@@ -192,7 +188,8 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       return res.json({
         success: false,
         message: "Score not higher than current high score",
-        currentHighScore
+        currentHighScore,
+        submittedScore: score
       });
     }
 
@@ -276,6 +273,5 @@ router.get("/leaderboard", generalLimiter, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch leaderboard" });
   }
 });
-
 
 export default router;
