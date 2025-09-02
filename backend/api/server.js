@@ -4,8 +4,8 @@ import { createClient } from "@supabase/supabase-js";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import router from "./routes/game.js";
-import authrouter from "./routes/auth.js";
+import router from "../routes/game.js";
+import authrouter from "../routes/auth.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,7 +25,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/", (req, res) => {
-    console.log("Hello from server");
+  res.send("Hello from server");
 });
 
 app.use("/api", router);
