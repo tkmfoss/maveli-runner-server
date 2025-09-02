@@ -29,7 +29,7 @@ app.use(express.static("public"));
 
 
 app.get("/", async (req, res) => {
-  res.send("Hello from  Server");
+  res.send("Hello you are verified you can login now");
 });
 
 app.use("/api", router);
