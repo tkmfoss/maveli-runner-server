@@ -1,6 +1,7 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 const authrouter = express.Router();
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY,
@@ -12,6 +13,7 @@ authrouter.post("/signup", async (req, res) => {
     if (!email || !pass || !username) {
       return res.status(400).json({ error: "Missing required fields" });
     }
+    
     const { data, error } = await supabase.auth.signUp({
       email: email,
       password: pass,
@@ -27,21 +29,25 @@ authrouter.post("/signup", async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
 
-    // Insert username and user_id into USER_PROFILES table after successful signup
-    const { data: profileData, error: profileError } = await supabase
-      .from("USER_PROFILES")
-      .insert([
-        {
-          user_id: data.user.id,
-          user_name: username,  
-          score: 0,            
-          last_updated: new Date().toISOString()
-        }
-      ]);
+    try {
+      const { data: profileData, error: profileError } = await supabase
+        .from("USER_PROFILES")
+        .insert([
+          {
+            user_id: data.user.id,
+            user_name: username,  
+            score: 0,            
+            last_updated: new Date().toISOString()
+          }
+        ]);
 
-    if (profileError) {
-      console.error("Error inserting user profile:", profileError.message);
-      return res.status(500).json({ error: "Failed to create user profile" });
+      if (profileError) {
+        console.error("Error inserting user profile:", profileError.message);
+  
+        console.log("Profile creation failed, will be created on first score access");
+      }
+    } catch (profileError) {
+      console.error("Profile creation error:", profileError);
     }
 
     return res.json({ user: data.user });
@@ -50,8 +56,6 @@ authrouter.post("/signup", async (req, res) => {
     return res.status(500).json({ error: "Failed to enter User Credentials" });
   }
 });
-
-
 
 authrouter.post("/login", async (req, res) => {
   try {
@@ -78,7 +82,7 @@ authrouter.post("/login", async (req, res) => {
 
     res.json({
       username: username,
-      token: data.session.access_token, 
+      token: data.session.access_token,
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -86,7 +90,41 @@ authrouter.post("/login", async (req, res) => {
   }
 });
 
+authrouter.post("/verify", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: "Authorization header missing" });
+    }
 
+    const token = authHeader.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ error: "Token missing" });
+    }
 
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_KEY,
+      {
+        global: {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      }
+    );
+
+    const { data: { user }, error } = await supabaseClient.auth.getUser(token);
+    
+    if (error || !user) {
+      console.log("Token verification failed:", error?.message || "User not found");
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+
+    return res.json({ valid: true, user_id: user.id });
+    
+  } catch (error) {
+    console.error("Token verification error:", error);
+    return res.status(401).json({ error: "Token verification failed" });
+  }
+});
 
 export default authrouter;
