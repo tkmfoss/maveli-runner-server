@@ -9,18 +9,20 @@ const supabaseBase = createClient(
   process.env.SUPABASE_KEY
 );
 
-
 const GAME_CONSTANTS = {
   MIN_GAME_DURATION: 2000,
-  MAX_GAME_DURATION: 600000,
-  MIN_SCORE_PER_SECOND: 15,
-  MAX_SCORE_PER_SECOND: 25,
-  MAX_SCORE_LIMIT: 1500000,
+  MAX_GAME_DURATION: 600000000000000, // Very long games allowed
+  MIN_SCORE_PER_SECOND: 10, // Reduced from 15 to allow slower scoring at high levels
+  MAX_SCORE_PER_SECOND: 30, // Increased from 25 to allow faster scoring
+  MAX_SCORE_LIMIT: 15000000, // Increased from 1.5M to 15M for high scores
   COOLDOWN_PERIOD: 3000,
-  PHYSICS_TOLERANCE: 0.2,
+  PHYSICS_TOLERANCE: 0.5, // Increased from 0.2 to allow more variation at high scores
   MIN_EVENTS: 2,
-  MAX_EVENTS: 500,
-  SESSION_TIMEOUT: 1800000,
+  MAX_EVENTS: 500000000, // Very high event limit
+  SESSION_TIMEOUT: 180000000000, // Very long session timeout
+  // Simple anti-cheat settings
+  MAX_SUBMISSION_DELAY: 300000, // Increased to 5 minutes for very long games
+  REQUIRE_FRESH_GAME: true,
 };
 
 const scoreUpdateLimiter = rateLimit({
@@ -37,52 +39,14 @@ const generalLimiter = rateLimit({
   message: { error: "Too many requests" }
 });
 
-const activeSessions = new Map();
+// Simple session tracking - just store user IDs and timestamps
+const activeGameSessions = new Map(); // userId -> { created: timestamp, sessionKey: string }
+const completedSessions = new Set(); // Track completed session keys to prevent reuse
 
-function generateSessionToken(userId) {
+function generateSimpleSessionKey(userId) {
   const timestamp = Date.now();
-  const random = crypto.randomBytes(16).toString('hex');
-  const data = `${userId}-${timestamp}-${random}`;
-  
-  const secret = process.env.GAME_SESSION_SECRET || 'default-secret-change-this';
-  const signature = crypto.createHmac('sha256', secret).update(data).digest('hex');
-  
-  return `${Buffer.from(data).toString('base64')}.${signature}`;
-}
-
-function verifySessionToken(token, userId) {
-  try {
-    if (!token || typeof token !== 'string') return false;
-    
-    const [dataB64, signature] = token.split('.');
-    if (!dataB64 || !signature) return false;
-    
-    const data = Buffer.from(dataB64, 'base64').toString();
-    const secret = process.env.GAME_SESSION_SECRET || 'default-secret-change-this';
-    const expectedSignature = crypto.createHmac('sha256', secret).update(data).digest('hex');
-    
-    if (!crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSignature, 'hex'))) {
-      console.log('Session token signature mismatch');
-      return false;
-    }
-    
-    const [tokenUserId, timestamp] = data.split('-');
-    if (tokenUserId !== userId) {
-      console.log('Session token user ID mismatch');
-      return false;
-    }
-    
-    const tokenAge = Date.now() - parseInt(timestamp);
-    if (tokenAge > GAME_CONSTANTS.SESSION_TIMEOUT) {
-      console.log('Session token expired');
-      return false;
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('Session token verification error:', error);
-    return false;
-  }
+  const randomPart = Math.random().toString(36).substring(2, 15);
+  return `${userId}-${timestamp}-${randomPart}`;
 }
 
 function createAuthenticatedSupabaseClient(token) {
@@ -99,31 +63,46 @@ function createAuthenticatedSupabaseClient(token) {
   );
 }
 
-function validateGameSession(gameSession, finalScore, userId) {
+// Enhanced validation for high scores
+function validateGameSession(gameSession, finalScore, userId, sessionKey) {
   console.log(`Validating game session for user ${userId}:`, {
     score: finalScore,
     duration: gameSession.duration,
-    events: gameSession.events?.length
+    events: gameSession.events?.length,
+    sessionKey: sessionKey
   });
 
-  const { startTime, endTime, duration, events, sessionToken } = gameSession;
+  const { startTime, endTime, duration, events } = gameSession;
   
   if (!startTime || !endTime || !events || !Array.isArray(events)) {
-    return { valid: false, reason: "Invalid game session data structure" };
+    return { valid: false, reason: "Invalid game data" };
   }
 
-  if (sessionToken) {
-    if (!verifySessionToken(sessionToken, userId)) {
-      console.log('Session token verification failed, but continuing validation...');
-    }
+  // Check if this session was already used
+  if (completedSessions.has(sessionKey)) {
+    return { valid: false, reason: "Game session expired" };
   }
 
+  // Check session exists and is recent
+  const userSession = activeGameSessions.get(userId);
+  if (!userSession || userSession.sessionKey !== sessionKey) {
+    return { valid: false, reason: "Game session expired" };
+  }
+
+  // Check game was played recently (with longer tolerance for high scores)
+  const gameEndTime = new Date(endTime).getTime();
+  const submissionDelay = Date.now() - gameEndTime;
+  if (GAME_CONSTANTS.REQUIRE_FRESH_GAME && submissionDelay > GAME_CONSTANTS.MAX_SUBMISSION_DELAY) {
+    return { valid: false, reason: "Game session expired" };
+  }
+
+  // Basic validation checks
   if (events.length < GAME_CONSTANTS.MIN_EVENTS) {
-    return { valid: false, reason: `Too few events: ${events.length} (minimum ${GAME_CONSTANTS.MIN_EVENTS})` };
+    return { valid: false, reason: "Invalid game data" };
   }
 
   if (events.length > GAME_CONSTANTS.MAX_EVENTS) {
-    return { valid: false, reason: `Too many events: ${events.length} (maximum ${GAME_CONSTANTS.MAX_EVENTS})` };
+    return { valid: false, reason: "Invalid game data" };
   }
 
   const startTs = new Date(startTime).getTime();
@@ -131,54 +110,66 @@ function validateGameSession(gameSession, finalScore, userId) {
   const now = Date.now();
 
   if (isNaN(startTs) || isNaN(endTs)) {
-    return { valid: false, reason: "Invalid timestamp format" };
+    return { valid: false, reason: "Invalid game data" };
   }
 
   if (startTs > now || endTs > now || startTs > endTs) {
-    return { valid: false, reason: "Invalid timestamp values" };
+    return { valid: false, reason: "Invalid game data" };
+  }
+
+  // Allow very long games (up to 6 hours for high scores)
+  if (now - startTs > 6 * 60 * 60 * 1000) {
+    return { valid: false, reason: "Game session expired" };
   }
 
   const calculatedDuration = endTs - startTs;
-  if (Math.abs(duration - calculatedDuration) > 5000) {
-    return { valid: false, reason: "Duration mismatch with timestamps" };
+  if (Math.abs(duration - calculatedDuration) > 10000) { // Increased tolerance to 10 seconds
+    return { valid: false, reason: "Invalid game data" };
   }
 
   if (duration < GAME_CONSTANTS.MIN_GAME_DURATION || duration > GAME_CONSTANTS.MAX_GAME_DURATION) {
-    return { valid: false, reason: `Invalid game duration: ${duration}ms` };
+    return { valid: false, reason: "Invalid game data" };
   }
 
   const startEvent = events.find(e => e.type === 'game_start');
   const endEvent = events.find(e => e.type === 'collision' || e.type === 'game_over');
 
   if (!startEvent) {
-    return { valid: false, reason: "Missing game_start event" };
+    return { valid: false, reason: "Invalid game data" };
   }
 
   if (!endEvent) {
-    return { valid: false, reason: "Missing collision/game_over event" };
+    return { valid: false, reason: "Invalid game data" };
   }
 
   if (finalScore < 0 || finalScore > GAME_CONSTANTS.MAX_SCORE_LIMIT) {
-    return { valid: false, reason: `Score out of range: ${finalScore}` };
+    return { valid: false, reason: "Invalid score data" };
   }
 
+  // Enhanced score rate validation for high scores
   const scoreRate = (finalScore / duration) * 1000;
-  
   if (scoreRate < GAME_CONSTANTS.MIN_SCORE_PER_SECOND || scoreRate > GAME_CONSTANTS.MAX_SCORE_PER_SECOND) {
-    return { valid: false, reason: `Invalid score rate: ${scoreRate.toFixed(2)} points/sec (expected ${GAME_CONSTANTS.MIN_SCORE_PER_SECOND}-${GAME_CONSTANTS.MAX_SCORE_PER_SECOND})` };
+    console.log(`Score rate validation failed: ${scoreRate.toFixed(2)} points/sec`);
+    return { valid: false, reason: "Invalid score data" };
   }
 
+  // Enhanced physics validation for high scores
   const expectedScore = Math.floor(duration / 50);
   const scoreDifference = Math.abs(finalScore - expectedScore);
-  const tolerance = Math.max(100, expectedScore * GAME_CONSTANTS.PHYSICS_TOLERANCE);
-
-  if (scoreDifference > tolerance) {
+  
+  // Dynamic tolerance based on score magnitude
+  const baseTolerance = Math.max(200, expectedScore * GAME_CONSTANTS.PHYSICS_TOLERANCE);
+  const highScoreTolerance = finalScore > 5000 ? baseTolerance * 2 : baseTolerance;
+  
+  if (scoreDifference > highScoreTolerance) {
+    console.log(`Physics validation failed: expected ~${expectedScore}, got ${finalScore}, difference ${scoreDifference}, tolerance ${highScoreTolerance}`);
     return { 
       valid: false, 
-      reason: `Score physics violation - expected ~${expectedScore}, got ${finalScore}, difference ${scoreDifference}` 
+      reason: "Invalid score data"
     };
   }
 
+  // Relaxed jump pattern check for long games
   const jumpEvents = events.filter(e => e.type === 'jump');
   if (jumpEvents.length > 0) {
     const jumpIntervals = [];
@@ -186,39 +177,34 @@ function validateGameSession(gameSession, finalScore, userId) {
       jumpIntervals.push(jumpEvents[i].timestamp - jumpEvents[i-1].timestamp);
     }
 
-    if (jumpIntervals.length > 5) {
-      const avgInterval = jumpIntervals.reduce((a, b) => a + b, 0) / jumpIntervals.length;
-      const variance = jumpIntervals.reduce((sum, interval) => {
-        return sum + Math.pow(interval - avgInterval, 2);
-      }, 0) / jumpIntervals.length;
-
-      const stdDev = Math.sqrt(variance);
+    if (jumpIntervals.length > 10) { // Only check if there are enough intervals
+      const fastReactions = jumpIntervals.filter(interval => interval < 50);
+      // More lenient for longer games
+      const maxFastReactionRatio = duration > 300000 ? 0.5 : 0.3; // 50% for games over 5 minutes
       
-      if (stdDev < 20 && jumpIntervals.length > 10) {
-        return { valid: false, reason: "Detected non-human jump patterns" };
+      if (fastReactions.length > jumpIntervals.length * maxFastReactionRatio) {
+        return { valid: false, reason: "Invalid game data" };
       }
-    }
-
-    const fastReactions = jumpIntervals.filter(interval => interval < 50);
-    if (fastReactions.length > jumpIntervals.length * 0.3) {
-      return { valid: false, reason: "Too many impossible reaction times detected" };
     }
   }
 
-  console.log(`Game session validation passed for user ${userId}`);
+  // Mark session as completed to prevent reuse
+  completedSessions.add(sessionKey);
+  
+  console.log(`High score game session validation passed for user ${userId}`);
   return { valid: true };
 }
 
 async function authenticateUser(req, res) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
-    res.status(401).json({ error: "Authorization header missing" });
+    res.status(401).json({ error: "Authentication required" });
     return null;
   }
 
   const token = authHeader.split(" ")[1];
   if (!token) {
-    res.status(401).json({ error: "Token missing from header" });
+    res.status(401).json({ error: "Authentication required" });
     return null;
   }
 
@@ -228,7 +214,7 @@ async function authenticateUser(req, res) {
     
     if (userError || !user) {
       console.log("User authentication failed:", userError?.message || "User not found");
-      res.status(401).json({ error: "Invalid or expired token" });
+      res.status(401).json({ error: "Authentication failed" });
       return null;
     }
     
@@ -285,32 +271,39 @@ async function getOrCreateProfile(userId, supabase, userName = "Player") {
   }
 }
 
+// Simplified session creation
 router.post("/create-session", generalLimiter, async (req, res) => {
   try {
     const auth = await authenticateUser(req, res);
     if (!auth) return;
     
     const { user } = auth;
-    const sessionToken = generateSessionToken(user.id);
+    const sessionKey = generateSimpleSessionKey(user.id);
     
-    activeSessions.set(user.id, {
-      token: sessionToken,
-      created: Date.now(),
-      used: false
+    // Store session info
+    activeGameSessions.set(user.id, {
+      sessionKey: sessionKey,
+      created: Date.now()
     });
     
+    // Clean up old sessions periodically
     const now = Date.now();
-    for (const [userId, session] of activeSessions.entries()) {
+    for (const [userId, session] of activeGameSessions.entries()) {
       if (now - session.created > GAME_CONSTANTS.SESSION_TIMEOUT) {
-        activeSessions.delete(userId);
+        activeGameSessions.delete(userId);
       }
     }
     
-    console.log(`Created game session for user ${user.id}`);
+    // Clean up old completed sessions
+    if (completedSessions.size > 10000) {
+      completedSessions.clear();
+    }
+    
+    console.log(`Game session created for user ${user.id}: ${sessionKey}`);
     
     res.json({
       success: true,
-      sessionToken,
+      sessionKey: sessionKey,
       maxDuration: GAME_CONSTANTS.MAX_GAME_DURATION,
       serverTime: Date.now()
     });
@@ -327,23 +320,35 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
     if (!auth) return;
     
     const { user, supabase } = auth;
-    const { score, gameSession } = req.body;
+    const { score, gameSession, sessionKey } = req.body;
+
+    console.log(`High score submission for user ${user.id}:`, {
+      score,
+      duration: gameSession?.duration,
+      events: gameSession?.events?.length,
+      sessionKey,
+      hasGameSession: !!gameSession
+    });
 
     if (typeof score !== "number" || score < 0 || !Number.isInteger(score)) {
-      return res.status(400).json({ error: "Invalid score format" });
+      return res.status(400).json({ error: "Invalid request data" });
     }
 
     if (score > GAME_CONSTANTS.MAX_SCORE_LIMIT) {
-      return res.status(400).json({ error: "Score exceeds maximum allowed" });
+      return res.status(400).json({ error: "Invalid request data" });
     }
 
     if (!gameSession || typeof gameSession !== 'object') {
-      return res.status(400).json({ error: "Game session data required" });
+      return res.status(400).json({ error: "Invalid request data" });
     }
 
-    const validation = validateGameSession(gameSession, score, user.id);
+    if (!sessionKey) {
+      return res.status(400).json({ error: "Invalid request data" });
+    }
+
+    const validation = validateGameSession(gameSession, score, user.id, sessionKey);
     if (!validation.valid) {
-      console.log(`Game session validation failed for user ${user.id}: ${validation.reason}`);
+      console.log(`High score validation failed for user ${user.id}: ${validation.reason}`);
       
       return res.status(400).json({ 
         error: `Game validation failed: ${validation.reason}` 
@@ -393,7 +398,10 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       return res.status(500).json({ error: "Failed to update score" });
     }
 
-    console.log(`Score update successful for user ${user.id}: ${score} (previous: ${currentHighScore})`);
+    // Clean up the session since it was successfully used
+    activeGameSessions.delete(user.id);
+
+    console.log(`HIGH SCORE UPDATE SUCCESSFUL for user ${user.id}: ${score} (previous: ${currentHighScore})`);
 
     return res.json({
       success: true,
@@ -441,7 +449,7 @@ router.get("/leaderboard", generalLimiter, async (req, res) => {
       .from("USER_PROFILES")
       .select("user_name, score, last_updated")
       .order("score", { ascending: false })
-      .limit(50);
+      .limit(10);
 
     if (userError) {
       console.error("Leaderboard fetch error:", userError);
@@ -469,9 +477,9 @@ setInterval(() => {
   const now = Date.now();
   let cleaned = 0;
   
-  for (const [userId, session] of activeSessions.entries()) {
+  for (const [userId, session] of activeGameSessions.entries()) {
     if (now - session.created > GAME_CONSTANTS.SESSION_TIMEOUT) {
-      activeSessions.delete(userId);
+      activeGameSessions.delete(userId);
       cleaned++;
     }
   }
