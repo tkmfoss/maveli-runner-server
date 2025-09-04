@@ -14,6 +14,21 @@ authrouter.post("/signup", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
     
+    const { data: existingUser, error: checkError } = await supabase
+      .from("USER_PROFILES")
+      .select("user_name")
+      .eq("user_name", username.trim())
+      .single();
+
+    if (checkError && checkError.code !== 'PGRST116') { 
+      console.error("Error checking username:", checkError.message);
+      return res.status(500).json({ error: "Failed to verify username availability" });
+    }
+
+    if (existingUser) {
+      return res.status(400).json({ error: "Username already exists. Please choose a different username." });
+    }
+    
     const { data, error } = await supabase.auth.signUp({
       email: email,
       password: pass,
@@ -43,11 +58,18 @@ authrouter.post("/signup", async (req, res) => {
 
       if (profileError) {
         console.error("Error inserting user profile:", profileError.message);
-  
-        console.log("Profile creation failed, will be created on first score access");
+        
+        try {
+          await supabase.auth.admin.deleteUser(data.user.id);
+        } catch (cleanupError) {
+          console.error("Failed to cleanup user after profile creation failure:", cleanupError);
+        }
+        
+        return res.status(500).json({ error: "Failed to create user profile" });
       }
     } catch (profileError) {
       console.error("Profile creation error:", profileError);
+      return res.status(500).json({ error: "Failed to create user profile" });
     }
 
     return res.json({ user: data.user });
@@ -124,6 +146,34 @@ authrouter.post("/verify", async (req, res) => {
   } catch (error) {
     console.error("Token verification error:", error);
     return res.status(401).json({ error: "Token verification failed" });
+  }
+});
+
+authrouter.get("/check-username/:username", async (req, res) => {
+  try {
+    const { username } = req.params;
+    
+    if (!username || username.trim().length < 3) {
+      return res.status(400).json({ error: "Username must be at least 3 characters long" });
+    }
+    
+    const { data: existingUser, error: checkError } = await supabase
+      .from("USER_PROFILES")
+      .select("user_name")
+      .eq("user_name", username.trim())
+      .single();
+
+    if (checkError && checkError.code !== 'PGRST116') {
+      console.error("Error checking username:", checkError.message);
+      return res.status(500).json({ error: "Failed to check username availability" });
+    }
+
+    const available = !existingUser;
+    res.json({ available });
+    
+  } catch (error) {
+    console.error("Username check error:", error);
+    res.status(500).json({ error: "Failed to check username availability" });
   }
 });
 
