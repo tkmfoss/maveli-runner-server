@@ -13,16 +13,16 @@ const supabaseBase = createClient(
 
 const GAME_CONSTANTS = {
   MIN_GAME_DURATION: 2000,
-  MAX_GAME_DURATION: 6000000000000000, 
+  MAX_GAME_DURATION: 999999999999999, 
   MIN_SCORE_PER_SECOND: 10, 
   MAX_SCORE_PER_SECOND: 30, 
   MAX_SCORE_LIMIT: 15000000, 
   COOLDOWN_PERIOD: 3000,
   PHYSICS_TOLERANCE: 0.5,
   MIN_EVENTS: 2,
-  MAX_EVENTS: 5000000000000, 
-  SESSION_TIMEOUT: 1800000000000000, 
-  MAX_SUBMISSION_DELAY: 3000000000000000, 
+  MAX_EVENTS: 999999999999999, 
+  SESSION_TIMEOUT: 999999999999999, 
+  MAX_SUBMISSION_DELAY: 999999999999999, 
   REQUIRE_FRESH_GAME: true,
 };
 
@@ -71,6 +71,7 @@ function createAuthenticatedSupabaseClient(token) {
 
 
 function validateGameSession(gameSession, finalScore, userId, sessionKey) {
+  console.log(`=== STARTING VALIDATION for user ${userId} ===`);
   console.log(`Validating game session for user ${userId}:`, {
     score: finalScore,
     duration: gameSession.duration,
@@ -81,150 +82,317 @@ function validateGameSession(gameSession, finalScore, userId, sessionKey) {
 
   const { startTime, endTime, duration, events } = gameSession;
   
+  // Check 1: Basic data structure
+  console.log(`CHECK 1 - Basic data structure:`, {
+    hasStartTime: !!startTime,
+    hasEndTime: !!endTime,
+    hasEvents: !!events,
+    eventsIsArray: Array.isArray(events)
+  });
+  
   if (!startTime || !endTime || !events || !Array.isArray(events)) {
+    console.log(`❌ FAILED CHECK 1 - Invalid game data structure`);
     return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 1`);
 
+  // Check 2: Session completion status
+  console.log(`CHECK 2 - Session completion status:`, {
+    sessionAlreadyCompleted: completedSessions.has(sessionKey)
+  });
 
   if (completedSessions.has(sessionKey)) {
+    console.log(`❌ FAILED CHECK 2 - Game session already completed`);
     return { valid: false, reason: "Game session expired" };
   }
+  console.log(`✅ PASSED CHECK 2`);
 
-
+  // Check 3: Active session validation
   const userSession = activeGameSessions.get(userId);
+  console.log(`CHECK 3 - Active session validation:`, {
+    hasActiveSession: !!userSession,
+    sessionKeyMatches: userSession?.sessionKey === sessionKey,
+    activeSessionKey: userSession?.sessionKey,
+    providedSessionKey: sessionKey
+  });
+
   if (!userSession || userSession.sessionKey !== sessionKey) {
+    console.log(`❌ FAILED CHECK 3 - Game session expired or invalid`);
     return { valid: false, reason: "Game session expired" };
   }
+  console.log(`✅ PASSED CHECK 3`);
 
-
+  // Check 4: Submission delay
   const gameEndTime = new Date(endTime).getTime();
   const submissionDelay = Date.now() - gameEndTime;
+  console.log(`CHECK 4 - Submission delay:`, {
+    gameEndTime: new Date(endTime).toISOString(),
+    currentTime: new Date().toISOString(),
+    submissionDelay: submissionDelay,
+    maxAllowedDelay: GAME_CONSTANTS.MAX_SUBMISSION_DELAY,
+    requireFreshGame: GAME_CONSTANTS.REQUIRE_FRESH_GAME
+  });
+  
   if (GAME_CONSTANTS.REQUIRE_FRESH_GAME && submissionDelay > GAME_CONSTANTS.MAX_SUBMISSION_DELAY) {
+    console.log(`❌ FAILED CHECK 4 - Submission delay too long`);
     return { valid: false, reason: "Game session expired" };
   }
+  console.log(`✅ PASSED CHECK 4`);
 
+  // Check 5: Events count
+  console.log(`CHECK 5 - Events count:`, {
+    eventsCount: events.length,
+    minRequired: GAME_CONSTANTS.MIN_EVENTS,
+    maxAllowed: GAME_CONSTANTS.MAX_EVENTS
+  });
 
   if (events.length < GAME_CONSTANTS.MIN_EVENTS) {
+    console.log(`❌ FAILED CHECK 5 - Too few events`);
     return { valid: false, reason: "Invalid game data" };
   }
-
 
   if (events.length > GAME_CONSTANTS.MAX_EVENTS) {
+    console.log(`❌ FAILED CHECK 5 - Too many events`);
     return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 5`);
 
-
+  // Check 6: Timestamp validation
   const startTs = new Date(startTime).getTime();
   const endTs = new Date(endTime).getTime();
   const now = Date.now();
 
+  console.log(`CHECK 6 - Timestamp validation:`, {
+    startTime: startTime,
+    endTime: endTime,
+    startTs: startTs,
+    endTs: endTs,
+    now: now,
+    startTsValid: !isNaN(startTs),
+    endTsValid: !isNaN(endTs),
+    startInFuture: startTs > now,
+    endInFuture: endTs > now,
+    startAfterEnd: startTs > endTs
+  });
 
   if (isNaN(startTs) || isNaN(endTs)) {
+    console.log(`❌ FAILED CHECK 6 - Invalid timestamps (NaN)`);
     return { valid: false, reason: "Invalid game data" };
   }
-
 
   if (startTs > now || endTs > now || startTs > endTs) {
+    console.log(`❌ FAILED CHECK 6 - Invalid timestamp logic`);
     return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 6`);
 
+  // Check 7: Game age validation
+  const gameAge = now - startTs;
+  const maxGameAge = 6 * 60 * 60 * 1000; // 6 hours
+  console.log(`CHECK 7 - Game age validation:`, {
+    gameAge: gameAge,
+    gameAgeMinutes: Math.round(gameAge / (1000 * 60)),
+    maxGameAgeMinutes: Math.round(maxGameAge / (1000 * 60)),
+    tooOld: gameAge > maxGameAge
+  });
 
   if (now - startTs > 6 * 60 * 60 * 1000) {
+    console.log(`❌ FAILED CHECK 7 - Game too old`);
     return { valid: false, reason: "Game session expired" };
   }
+  console.log(`✅ PASSED CHECK 7`);
 
-
+  // Check 8: Duration consistency
   const calculatedDuration = endTs - startTs;
+  const durationDiff = Math.abs(duration - calculatedDuration);
+  console.log(`CHECK 8 - Duration consistency:`, {
+    providedDuration: duration,
+    calculatedDuration: calculatedDuration,
+    difference: durationDiff,
+    maxAllowedDiff: 10000
+  });
+  
   if (Math.abs(duration - calculatedDuration) > 10000) { 
+    console.log(`❌ FAILED CHECK 8 - Duration inconsistency`);
     return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 8`);
 
+  // Check 9: Duration limits
+  console.log(`CHECK 9 - Duration limits:`, {
+    duration: duration,
+    minDuration: GAME_CONSTANTS.MIN_GAME_DURATION,
+    maxDuration: GAME_CONSTANTS.MAX_GAME_DURATION,
+    tooShort: duration < GAME_CONSTANTS.MIN_GAME_DURATION,
+    tooLong: duration > GAME_CONSTANTS.MAX_GAME_DURATION
+  });
 
   if (duration < GAME_CONSTANTS.MIN_GAME_DURATION || duration > GAME_CONSTANTS.MAX_GAME_DURATION) {
+    console.log(`❌ FAILED CHECK 9 - Duration out of bounds`);
     return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 9`);
 
-
+  // Check 10: Required events
   const startEvent = events.find(e => e.type === 'game_start');
   const endEvent = events.find(e => e.type === 'collision' || e.type === 'game_over');
 
+  console.log(`CHECK 10 - Required events:`, {
+    hasStartEvent: !!startEvent,
+    hasEndEvent: !!endEvent,
+    startEventData: startEvent,
+    endEventData: endEvent
+  });
 
   if (!startEvent) {
+    console.log(`❌ FAILED CHECK 10 - Missing start event`);
     return { valid: false, reason: "Invalid game data" };
   }
-
 
   if (!endEvent) {
+    console.log(`❌ FAILED CHECK 10 - Missing end event`);
     return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 10`);
 
+  // Check 11: Score limits
+  console.log(`CHECK 11 - Score limits:`, {
+    finalScore: finalScore,
+    maxScoreLimit: GAME_CONSTANTS.MAX_SCORE_LIMIT,
+    negative: finalScore < 0,
+    tooHigh: finalScore > GAME_CONSTANTS.MAX_SCORE_LIMIT
+  });
 
   if (finalScore < 0 || finalScore > GAME_CONSTANTS.MAX_SCORE_LIMIT) {
+    console.log(`❌ FAILED CHECK 11 - Score out of bounds`);
     return { valid: false, reason: "Invalid score data" };
   }
+  console.log(`✅ PASSED CHECK 11`);
 
-
+  // Check 12: Score rate validation
   const scoreRate = (finalScore / duration) * 1000;
+  console.log(`CHECK 12 - Score rate validation:`, {
+    finalScore: finalScore,
+    duration: duration,
+    scoreRate: scoreRate,
+    minRate: GAME_CONSTANTS.MIN_SCORE_PER_SECOND,
+    maxRate: GAME_CONSTANTS.MAX_SCORE_PER_SECOND,
+    tooSlow: scoreRate < GAME_CONSTANTS.MIN_SCORE_PER_SECOND,
+    tooFast: scoreRate > GAME_CONSTANTS.MAX_SCORE_PER_SECOND
+  });
+  
   if (scoreRate < GAME_CONSTANTS.MIN_SCORE_PER_SECOND || scoreRate > GAME_CONSTANTS.MAX_SCORE_PER_SECOND) {
-    console.log(`Score rate validation failed: ${scoreRate.toFixed(2)} points/sec`);
+    console.log(`❌ FAILED CHECK 12 - Score rate invalid: ${scoreRate.toFixed(2)} points/sec`);
     return { valid: false, reason: "Invalid score data" };
   }
+  console.log(`✅ PASSED CHECK 12`);
 
-
+  // Check 13: Physics validation
   const expectedScore = Math.floor(duration / 50);
   const scoreDifference = Math.abs(finalScore - expectedScore);
   
   const baseTolerance = Math.max(200, expectedScore * GAME_CONSTANTS.PHYSICS_TOLERANCE);
   const highScoreTolerance = finalScore > 5000 ? baseTolerance * 2 : baseTolerance;
   
+  console.log(`CHECK 13 - Physics validation:`, {
+    expectedScore: expectedScore,
+    actualScore: finalScore,
+    scoreDifference: scoreDifference,
+    baseTolerance: baseTolerance,
+    highScoreTolerance: highScoreTolerance,
+    isHighScore: finalScore > 5000,
+    physicsToleranceConstant: GAME_CONSTANTS.PHYSICS_TOLERANCE
+  });
+  
   if (scoreDifference > highScoreTolerance) {
-    console.log(`Physics validation failed: expected ~${expectedScore}, got ${finalScore}, difference ${scoreDifference}, tolerance ${highScoreTolerance}`);
+    console.log(`❌ FAILED CHECK 13 - Physics validation failed: expected ~${expectedScore}, got ${finalScore}, difference ${scoreDifference}, tolerance ${highScoreTolerance}`);
     return { 
       valid: false, 
       reason: "Invalid score data"
     };
   }
+  console.log(`✅ PASSED CHECK 13`);
 
-
+  // Check 14: Jump behavior analysis
   const jumpEvents = events.filter(e => e.type === 'jump');
+  console.log(`CHECK 14 - Jump behavior analysis:`, {
+    totalJumps: jumpEvents.length,
+    hasJumps: jumpEvents.length > 0
+  });
+  
   if (jumpEvents.length > 0) {
     const jumpIntervals = [];
     for (let i = 1; i < jumpEvents.length; i++) {
       jumpIntervals.push(jumpEvents[i].timestamp - jumpEvents[i-1].timestamp);
     }
 
+    console.log(`CHECK 14a - Jump intervals:`, {
+      jumpIntervalsCount: jumpIntervals.length,
+      minInterval: jumpIntervals.length > 0 ? Math.min(...jumpIntervals) : 'N/A',
+      maxInterval: jumpIntervals.length > 0 ? Math.max(...jumpIntervals) : 'N/A',
+      avgInterval: jumpIntervals.length > 0 ? Math.round(jumpIntervals.reduce((a,b) => a+b, 0) / jumpIntervals.length) : 'N/A'
+    });
 
     if (jumpIntervals.length > 10) { 
       const fastReactions = jumpIntervals.filter(interval => interval < 50);
       const maxFastReactionRatio = duration > 300000 ? 0.5 : 0.3;
+      const actualFastReactionRatio = fastReactions.length / jumpIntervals.length;
+      
+      console.log(`CHECK 14b - Fast reaction analysis:`, {
+        fastReactions: fastReactions.length,
+        totalIntervals: jumpIntervals.length,
+        actualRatio: actualFastReactionRatio,
+        maxAllowedRatio: maxFastReactionRatio,
+        durationLong: duration > 300000,
+        tooManyFastReactions: actualFastReactionRatio > maxFastReactionRatio
+      });
       
       if (fastReactions.length > jumpIntervals.length * maxFastReactionRatio) {
+        console.log(`❌ FAILED CHECK 14 - Too many fast reactions`);
         return { valid: false, reason: "Invalid game data" };
       }
     }
   }
+  console.log(`✅ PASSED CHECK 14`);
 
-
+  // Check 15: Jump vs obstacle analysis
   const obstacleSpawns = events.filter(e => e.type === 'obstacle_spawn').length;
   
+  console.log(`CHECK 15 - Jump vs obstacle analysis:`, {
+    obstacleSpawns: obstacleSpawns,
+    jumpEvents: jumpEvents.length,
+    finalScore: finalScore,
+    jumpToObstacleRatio: obstacleSpawns > 0 ? (jumpEvents.length / obstacleSpawns) : 'N/A'
+  });
+  
   if (finalScore > 1000 && jumpEvents.length < obstacleSpawns * 0.7) {
-      console.log(`Jump validation failed: ${jumpEvents.length} jumps for ${obstacleSpawns} obstacles`);
-      return { valid: false, reason: "Invalid game data" };
+    console.log(`❌ FAILED CHECK 15a - Jump validation failed: ${jumpEvents.length} jumps for ${obstacleSpawns} obstacles`);
+    return { valid: false, reason: "Invalid game data" };
   }
   
   if (finalScore > 500 && jumpEvents.length === 0) {
-      return { valid: false, reason: "Invalid game data" };
+    console.log(`❌ FAILED CHECK 15b - No jumps for high score`);
+    return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 15`);
   
+  // Check 16: Integrity violations
   const integrityViolations = events.filter(e => e.type === 'integrity_violation');
+  console.log(`CHECK 16 - Integrity violations:`, {
+    integrityViolations: integrityViolations.length,
+    violations: integrityViolations
+  });
+  
   if (integrityViolations.length > 0) {
-      console.log(`Integrity violation detected in events`);
-      return { valid: false, reason: "Invalid game data" };
+    console.log(`❌ FAILED CHECK 16 - Integrity violation detected in events`);
+    return { valid: false, reason: "Invalid game data" };
   }
+  console.log(`✅ PASSED CHECK 16`);
 
   completedSessions.add(sessionKey);
   
-  console.log(`High score game session validation passed for user ${userId}`);
+  console.log(`🎉 ALL CHECKS PASSED - High score game session validation successful for user ${userId}`);
+  console.log(`=== VALIDATION COMPLETE ===`);
   return { valid: true };
 }
 
