@@ -3,13 +3,11 @@ import { createClient } from "@supabase/supabase-js";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 
-
 const router = express.Router();
 const supabaseBase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
-
 
 const GAME_CONSTANTS = {
   MIN_GAME_DURATION: 2000,
@@ -21,11 +19,10 @@ const GAME_CONSTANTS = {
   PHYSICS_TOLERANCE: 0.5,
   MIN_EVENTS: 2,
   MAX_EVENTS: 999999999999999, 
-  SESSION_TIMEOUT: 999999999999999, 
+  SESSION_TIMEOUT: 86400000, // 24 hours in ms (reduced from extremely large value)
   MAX_SUBMISSION_DELAY: 999999999999999, 
   REQUIRE_FRESH_GAME: true,
 };
-
 
 const scoreUpdateLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -35,25 +32,20 @@ const scoreUpdateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 25,
   message: { error: "Too many requests" }
 });
 
-
-
 const activeGameSessions = new Map(); 
 const completedSessions = new Set(); 
-
 
 function generateSimpleSessionKey(userId) {
   const timestamp = Date.now();
   const randomPart = Math.random().toString(36).substring(2, 15);
   return `${userId}-${timestamp}-${randomPart}`;
 }
-
 
 function createAuthenticatedSupabaseClient(token) {
   return createClient(
@@ -69,8 +61,7 @@ function createAuthenticatedSupabaseClient(token) {
   );
 }
 
-
-function validateGameSession(gameSession, finalScore, userId, sessionKey) {
+async function validateGameSession(gameSession, finalScore, userId, sessionKey) {
   console.log(`=== STARTING VALIDATION for user ${userId} ===`);
   console.log(`Validating game session for user ${userId}:`, {
     score: finalScore,
@@ -78,7 +69,6 @@ function validateGameSession(gameSession, finalScore, userId, sessionKey) {
     events: gameSession.events?.length,
     sessionKey: sessionKey
   });
-
 
   const { startTime, endTime, duration, events } = gameSession;
   
@@ -107,18 +97,38 @@ function validateGameSession(gameSession, finalScore, userId, sessionKey) {
   }
   console.log(`✅ PASSED CHECK 2`);
 
-  // Check 3: Active session validation
-  const userSession = activeGameSessions.get(userId);
-  console.log(`CHECK 3 - Active session validation:`, {
-    hasActiveSession: !!userSession,
-    sessionKeyMatches: userSession?.sessionKey === sessionKey,
-    activeSessionKey: userSession?.sessionKey,
+  // Check 3: Active session validation (in-memory + Supabase fallback)
+  let userSession = activeGameSessions.get(userId);
+  console.log(`CHECK 3 - Active session validation (initial):`, {
+    hasActiveSessionInMemory: !!userSession,
+    sessionKeyMatchesInMemory: userSession?.sessionKey === sessionKey,
+    activeSessionKeyInMemory: userSession?.sessionKey,
     providedSessionKey: sessionKey
   });
 
   if (!userSession || userSession.sessionKey !== sessionKey) {
-    console.log(`❌ FAILED CHECK 3 - Game session expired or invalid`);
-    return { valid: false, reason: "Game session expired" };
+    // Fall back to Supabase
+    const { data, error } = await supabaseBase
+      .from("game_sessions")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("session_key", sessionKey)
+      .gte("expires_at", new Date().toISOString())
+      .single();
+
+    if (error || !data) {
+      console.log(`❌ FAILED CHECK 3 - No valid session found in Supabase:`, error?.message);
+      return { valid: false, reason: "Game session expired" };
+    }
+
+    console.log(`✅ FOUND SESSION IN SUPABASE - Caching in memory`);
+    userSession = {
+      sessionKey: sessionKey,
+      created: new Date(data.created_at).getTime()
+    };
+    activeGameSessions.set(userId, userSession);
+  } else {
+    console.log(`✅ PASSED CHECK 3 - Found in-memory session`);
   }
   console.log(`✅ PASSED CHECK 3`);
 
@@ -389,13 +399,25 @@ function validateGameSession(gameSession, finalScore, userId, sessionKey) {
   }
   console.log(`✅ PASSED CHECK 16`);
 
+  // Delete the session from Supabase after successful validation
+  const { error: deleteError } = await supabaseBase
+    .from("game_sessions")
+    .delete()
+    .eq("user_id", userId)
+    .eq("session_key", sessionKey);
+
+  if (deleteError) {
+    console.error(`Warning: Failed to delete session from Supabase:`, deleteError);
+  } else {
+    console.log(`Session deleted from Supabase successfully`);
+  }
+
   completedSessions.add(sessionKey);
   
   console.log(`🎉 ALL CHECKS PASSED - High score game session validation successful for user ${userId}`);
   console.log(`=== VALIDATION COMPLETE ===`);
   return { valid: true };
 }
-
 
 async function authenticateUser(req, res) {
   const authHeader = req.headers.authorization;
@@ -404,13 +426,11 @@ async function authenticateUser(req, res) {
     return null;
   }
 
-
   const token = authHeader.split(" ")[1];
   if (!token) {
     res.status(401).json({ error: "Authentication required" });
     return null;
   }
-
 
   const supabase = createAuthenticatedSupabaseClient(token);
   try {
@@ -430,7 +450,6 @@ async function authenticateUser(req, res) {
   }
 }
 
-
 async function getOrCreateProfile(userId, supabase, userName = "Player") {
   try {
     const { data: profileData, error: fetchError } = await supabase
@@ -439,12 +458,10 @@ async function getOrCreateProfile(userId, supabase, userName = "Player") {
       .eq("user_id", userId)
       .single();
 
-
     if (profileData) {
       console.log(`Found existing profile for user ${userId}`);
       return profileData;
     }
-
 
     if (fetchError && fetchError.code === 'PGRST116') {
       console.log(`Creating profile for user ${userId}`);
@@ -469,7 +486,6 @@ async function getOrCreateProfile(userId, supabase, userName = "Player") {
       return newProfile;
     }
 
-
     console.error("Database query error:", fetchError);
     throw new Error("Failed to access user profile");
     
@@ -479,20 +495,36 @@ async function getOrCreateProfile(userId, supabase, userName = "Player") {
   }
 }
 
-
 router.post("/create-session", generalLimiter, async (req, res) => {
   try {
     const auth = await authenticateUser(req, res);
     if (!auth) return;
     
-    const { user } = auth;
+    const { user, supabase } = auth;
     const sessionKey = generateSimpleSessionKey(user.id);
-    
+    const expiresAt = new Date(Date.now() + GAME_CONSTANTS.SESSION_TIMEOUT).toISOString();
+
+    // Store session in Supabase
+    const { error: insertError } = await supabase
+      .from("game_sessions")
+      .insert({
+        user_id: user.id,
+        session_key: sessionKey,
+        created_at: new Date().toISOString(),
+        expires_at: expiresAt
+      });
+
+    if (insertError) {
+      console.error("Failed to store session in Supabase:", insertError);
+      return res.status(500).json({ error: "Failed to create game session" });
+    }
+
+    // Cache in memory for quick access
     activeGameSessions.set(user.id, {
       sessionKey: sessionKey,
       created: Date.now()
     });
-    
+
     const now = Date.now();
     for (const [userId, session] of activeGameSessions.entries()) {
       if (now - session.created > GAME_CONSTANTS.SESSION_TIMEOUT) {
@@ -519,7 +551,6 @@ router.post("/create-session", generalLimiter, async (req, res) => {
   }
 });
 
-
 router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
   try {
     const auth = await authenticateUser(req, res);
@@ -527,7 +558,6 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
     
     const { user, supabase } = auth;
     const { score, gameSession, sessionKey } = req.body;
-
 
     console.log(`High score submission for user ${user.id}:`, {
       score,
@@ -537,28 +567,23 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       hasGameSession: !!gameSession
     });
 
-
     if (typeof score !== "number" || score < 0 || !Number.isInteger(score)) {
       return res.status(400).json({ error: "Invalid request data" });
     }
-
 
     if (score > GAME_CONSTANTS.MAX_SCORE_LIMIT) {
       return res.status(400).json({ error: "Invalid request data" });
     }
 
-
     if (!gameSession || typeof gameSession !== 'object') {
       return res.status(400).json({ error: "Invalid request data" });
     }
-
 
     if (!sessionKey) {
       return res.status(400).json({ error: "Invalid request data" });
     }
 
-
-    const validation = validateGameSession(gameSession, score, user.id, sessionKey);
+    const validation = await validateGameSession(gameSession, score, user.id, sessionKey);
     if (!validation.valid) {
       console.log(`High score validation failed for user ${user.id}: ${validation.reason}`);
       
@@ -566,7 +591,6 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
         error: `Game validation failed: ${validation.reason}` 
       });
     }
-
 
     let currentProfile;
     try {
@@ -576,10 +600,8 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       return res.status(500).json({ error: "Failed to access user profile" });
     }
 
-
     const currentHighScore = currentProfile?.score || 0;
     const lastUpdated = currentProfile?.last_updated;
-
 
     if (lastUpdated) {
       const timeSinceLastUpdate = Date.now() - new Date(lastUpdated).getTime();
@@ -591,7 +613,6 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       }
     }
 
-
     if (score <= currentHighScore) {
       return res.json({
         success: false,
@@ -601,7 +622,6 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       });
     }
 
-
     const { error: updateError } = await supabase
       .from("USER_PROFILES")
       .update({
@@ -610,7 +630,6 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       })
       .eq("user_id", user.id);
 
-
     if (updateError) {
       console.error("Database update error:", updateError);
       return res.status(500).json({ error: "Failed to update score" });
@@ -618,9 +637,7 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
 
     activeGameSessions.delete(user.id);
 
-
     console.log(`HIGH SCORE UPDATE SUCCESSFUL for user ${user.id}: ${score} (previous: ${currentHighScore})`);
-
 
     return res.json({
       success: true,
@@ -630,13 +647,11 @@ router.post("/scoreupdate", scoreUpdateLimiter, async (req, res) => {
       improvement: score - currentHighScore
     });
 
-
   } catch (error) {
     console.error("Score update error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 router.get("/userscore", generalLimiter, async (req, res) => {
   try {
@@ -653,7 +668,6 @@ router.get("/userscore", generalLimiter, async (req, res) => {
       return res.status(500).json({ error: "Failed to access user profile" });
     }
 
-
     return res.json({ 
       score: profile?.score || 0,
       lastUpdated: profile?.last_updated
@@ -665,7 +679,6 @@ router.get("/userscore", generalLimiter, async (req, res) => {
   }
 });
 
-
 router.get("/leaderboard", generalLimiter, async (req, res) => {
   try {
     const { data: userData, error: userError } = await supabaseBase
@@ -674,12 +687,10 @@ router.get("/leaderboard", generalLimiter, async (req, res) => {
       .order("score", { ascending: false })
       .limit(10);
 
-
     if (userError) {
       console.error("Leaderboard fetch error:", userError);
       return res.status(500).json({ error: "Failed to fetch leaderboard" });
     }
-
 
     const leaderboard = userData?.map((u, i) => ({
       rank: i + 1,
@@ -687,7 +698,6 @@ router.get("/leaderboard", generalLimiter, async (req, res) => {
       score: u.score || 0,
       lastUpdated: u.last_updated
     })) || [];
-
 
     res.json({ 
       leaderboard,
@@ -699,22 +709,32 @@ router.get("/leaderboard", generalLimiter, async (req, res) => {
   }
 });
 
-
-setInterval(() => {
+// Cleanup interval for expired sessions (in-memory and Supabase)
+setInterval(async () => {
   const now = Date.now();
   let cleaned = 0;
   
+  // Clean in-memory sessions
   for (const [userId, session] of activeGameSessions.entries()) {
     if (now - session.created > GAME_CONSTANTS.SESSION_TIMEOUT) {
       activeGameSessions.delete(userId);
       cleaned++;
     }
   }
-  
+
+  // Clean expired sessions in Supabase
+  const { error: deleteError } = await supabaseBase
+    .from("game_sessions")
+    .delete()
+    .lte("expires_at", new Date().toISOString());
+
+  if (deleteError) {
+    console.error("Failed to clean up expired sessions in Supabase:", deleteError);
+  }
+
   if (cleaned > 0) {
     console.log(`Cleaned up ${cleaned} expired game sessions`);
   }
-}, 5 * 60 * 1000);
-
+}, 5 * 60 * 1000); // Every 5 minutes
 
 export default router;
